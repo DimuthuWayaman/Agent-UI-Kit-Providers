@@ -4,10 +4,10 @@ description: >-
   markdown bubbles, tool-call visualization, a themeable composer, and
   optional OpenRouter/Gemini provider integrations.
 version: 1.0.0
-repository: https://github.com/dimuthuwayaman/agent_ui_kit_providers
-issue_tracker: https://github.com/dimuthuwayaman/agent_ui_kit_providers/issues
-homepage: https://github.com/dimuthuwayaman/agent_ui_kit_providers
-documentation: https://github.com/dimuthuwayaman/agent_ui_kit_providers#readme
+repository: https://github.com/DimuthuWayaman/Agent-UI-Kit-Providers
+issue_tracker: https://github.com/DimuthuWayaman/Agent-UI-Kit-Providers/issues
+homepage: https://github.com/DimuthuWayaman/Agent-UI-Kit-Providers
+documentation: https://github.com/DimuthuWayaman/Agent-UI-Kit-Providers#readme
 
 topics:
   - ai
