@@ -1,0 +1,9 @@
+# Excluded from the published package archive in addition to pub's defaults.
+# There is no .git here for `pub publish` to filter by, so this is load-bearing,
+# not just tidiness -- without it, build/ and .dart_tool/ caches would be
+# bundled straight into the archive.
+build/
+example/build/
+example/.dart_tool/
+.idea/
+.vscode/

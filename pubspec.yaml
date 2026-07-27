@@ -1,0 +1,39 @@
+name: agent_ui_kit_providers
+description: >-
+  Themeable Flutter widgets for AI chat and agent interfaces: streaming
+  markdown bubbles, tool-call visualization, a themeable composer, and
+  optional OpenRouter/Gemini provider integrations.
+version: 1.0.0
+repository: https://github.com/dimuthuwayaman/agent_ui_kit_providers
+issue_tracker: https://github.com/dimuthuwayaman/agent_ui_kit_providers/issues
+homepage: https://github.com/dimuthuwayaman/agent_ui_kit_providers
+documentation: https://github.com/dimuthuwayaman/agent_ui_kit_providers#readme
+
+topics:
+  - ai
+  - chat
+  - llm
+  - openrouter
+  - gemini
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+
+# The UI layer (widgets/, theme/, markdown/, controllers/, models/) has no
+# dependency of its own. `http` is listed here only for the optional provider
+# integrations under lib/src/providers/ (see lib/providers.dart) -- Dart/pub
+# has no notion of an optional dependency, so it is resolved for every
+# consumer regardless of which library entry point they import.
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
