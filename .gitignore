@@ -10,6 +10,9 @@ example/.flutter-plugins
 example/.flutter-plugins-dependencies
 example/.packages
 
+# Local agent instructions, not published to the repo
+CLAUDE.md
+
 # IDE
 .idea/
 .vscode/
