@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/attachment.dart';
 import '../models/chat_message.dart';
 import '../models/tool_call.dart';
 import 'agent_provider.dart';
@@ -82,32 +83,54 @@ class OpenRouterProvider extends AgentProvider {
         continue;
       }
 
-      final choices = json['choices'] as List<Object?>?;
-      final delta = choices == null || choices.isEmpty
-          ? null
-          : (choices.first as Map<String, Object?>)['delta']
-              as Map<String, Object?>?;
-      if (delta == null) continue;
-
-      final content = delta['content'] as String?;
-      if (content != null && content.isNotEmpty) {
-        yield TextDelta(content);
-      }
-
-      final toolCalls = delta['tool_calls'] as List<Object?>?;
-      if (toolCalls != null) {
-        for (final raw in toolCalls) {
-          final entry = raw as Map<String, Object?>;
-          final index = entry['index'] as int? ?? 0;
-          final function = entry['function'] as Map<String, Object?>?;
-          final pending = pendingCalls.putIfAbsent(index, _PendingToolCall.new);
-          final id = entry['id'] as String?;
-          if (id != null) pending.id = id;
-          final name = function?['name'] as String?;
-          if (name != null) pending.name = name;
-          final argsChunk = function?['arguments'] as String?;
-          if (argsChunk != null) pending.arguments.write(argsChunk);
+      // A payload that parses as valid JSON but has an unexpected shape
+      // (e.g. `choices` isn't a List) throws a TypeError from the casts
+      // below -- treat it the same as a FormatException: skip the one bad
+      // chunk rather than failing the whole turn and losing everything
+      // accumulated so far (including `pendingCalls`).
+      try {
+        // Checked with `is` rather than `as` so a malformed `error` field
+        // can't itself throw a TypeError that gets swallowed by the catch
+        // below -- a real mid-stream error must always surface.
+        final error = json['error'];
+        if (error is Map<String, Object?>) {
+          final code = error['code'];
+          throw AgentProviderException(
+            code is int ? code : response.statusCode,
+            error['message']?.toString() ?? jsonEncode(error),
+          );
         }
+
+        final choices = json['choices'] as List<Object?>?;
+        final delta = choices == null || choices.isEmpty
+            ? null
+            : (choices.first as Map<String, Object?>)['delta']
+                as Map<String, Object?>?;
+        if (delta == null) continue;
+
+        final content = delta['content'] as String?;
+        if (content != null && content.isNotEmpty) {
+          yield TextDelta(content);
+        }
+
+        final toolCalls = delta['tool_calls'] as List<Object?>?;
+        if (toolCalls != null) {
+          for (final raw in toolCalls) {
+            final entry = raw as Map<String, Object?>;
+            final index = entry['index'] as int? ?? 0;
+            final function = entry['function'] as Map<String, Object?>?;
+            final pending =
+                pendingCalls.putIfAbsent(index, _PendingToolCall.new);
+            final id = entry['id'] as String?;
+            if (id != null) pending.id = id;
+            final name = function?['name'] as String?;
+            if (name != null) pending.name = name;
+            final argsChunk = function?['arguments'] as String?;
+            if (argsChunk != null) pending.arguments.write(argsChunk);
+          }
+        }
+      } on TypeError {
+        continue;
       }
     }
 
@@ -122,11 +145,53 @@ class OpenRouterProvider extends AgentProvider {
     for (final message in conversation) {
       switch (message.role) {
         case ChatRole.user:
-          messages.add({'role': 'user', 'content': message.text});
+          // Only image attachments are forwarded, as OpenAI-style
+          // `image_url` content parts. Documents/audio/video are model- and
+          // API-dependent enough that full support is out of scope here;
+          // other kinds are described in the UI but not sent to the model.
+          final imageParts = <Map<String, Object?>>[];
+          for (final attachment in message.attachments) {
+            if (attachment.kind != AttachmentKind.image) continue;
+            final url = _openAiImageUrl(attachment);
+            if (url == null) continue;
+            imageParts.add({
+              'type': 'image_url',
+              'image_url': {'url': url},
+            });
+          }
+          messages.add({
+            'role': 'user',
+            // The plain-string form is used whenever there are no images;
+            // the array-of-blocks form is only needed to interleave image
+            // parts, and a text block within it is omitted entirely when
+            // empty (an image sent with no caption) -- some backends behind
+            // OpenRouter (Anthropic in particular) reject an empty text
+            // content block outright.
+            'content': imageParts.isEmpty
+                ? message.text
+                : [
+                    if (message.text.isNotEmpty)
+                      {'type': 'text', 'text': message.text},
+                    ...imageParts,
+                  ],
+          });
         case ChatRole.system:
           messages.add({'role': 'system', 'content': message.text});
         case ChatRole.assistant:
-          if (message.toolCalls.isEmpty) {
+          // Only finished tool calls are represented in history -- a call
+          // still `pending`/`running` has no matching tool-result message
+          // yet, and OpenAI-compatible APIs reject a tool_calls entry left
+          // unanswered by a later turn. The call itself is still visible in
+          // the UI via ChatMessage.toolCalls; it just isn't part of the API
+          // history until it resolves.
+          final finished = message.toolCalls.where((c) => c.isFinished).toList();
+          if (finished.isEmpty) {
+            // No tool calls at all, or none finished yet -- send the plain
+            // text turn either way, even when [message.text] is empty: a
+            // genuinely-completed empty turn must still appear in history
+            // (e.g. so it isn't silently dropped from a conversation that
+            // otherwise requires strict role alternation -- see
+            // AgentProvider.asResponder's doc comment).
             messages.add({'role': 'assistant', 'content': message.text});
             break;
           }
@@ -134,7 +199,7 @@ class OpenRouterProvider extends AgentProvider {
             'role': 'assistant',
             'content': message.text,
             'tool_calls': [
-              for (final call in message.toolCalls)
+              for (final call in finished)
                 {
                   'id': call.id,
                   'type': 'function',
@@ -145,8 +210,7 @@ class OpenRouterProvider extends AgentProvider {
                 },
             ],
           });
-          for (final call in message.toolCalls) {
-            if (!call.isFinished) continue;
+          for (final call in finished) {
             messages.add({
               'role': 'tool',
               'tool_call_id': call.id,
@@ -156,6 +220,17 @@ class OpenRouterProvider extends AgentProvider {
       }
     }
     return messages;
+  }
+
+  /// Returns a `data:` URI for in-memory [Attachment.bytes], the raw
+  /// [Attachment.url] when there are no bytes, or `null` when neither is set.
+  static String? _openAiImageUrl(Attachment attachment) {
+    final bytes = attachment.bytes;
+    if (bytes != null && bytes.isNotEmpty) {
+      final mime = attachment.mimeType ?? 'application/octet-stream';
+      return 'data:$mime;base64,${base64Encode(bytes)}';
+    }
+    return attachment.url;
   }
 
   @override

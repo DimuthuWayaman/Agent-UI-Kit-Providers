@@ -1,5 +1,9 @@
 import 'package:flutter/foundation.dart';
 
+/// Sentinel default for a `copyWith` parameter, distinguishing "omitted" (use
+/// the current value) from an explicit `null` (clear the field).
+const Object _unset = Object();
+
 /// Lifecycle of a single tool/function call.
 enum ToolCallStatus {
   /// The model requested the call; execution has not started.
@@ -92,13 +96,19 @@ class ToolCall {
       (output?.isNotEmpty ?? false) ||
       (error?.isNotEmpty ?? false);
 
+  /// Returns a copy with the given fields replaced.
+  ///
+  /// [input], [output] and [error] default to a sentinel rather than `null`,
+  /// so omitting them preserves the current value while passing `null`
+  /// explicitly clears it — e.g. `copyWith(status: ToolCallStatus.running,
+  /// error: null)` clears a previous failure when retrying the same call.
   ToolCall copyWith({
     String? id,
     String? name,
     ToolCallStatus? status,
-    String? input,
-    String? output,
-    String? error,
+    Object? input = _unset,
+    Object? output = _unset,
+    Object? error = _unset,
     DateTime? startedAt,
     DateTime? completedAt,
   }) {
@@ -106,9 +116,9 @@ class ToolCall {
       id: id ?? this.id,
       name: name ?? this.name,
       status: status ?? this.status,
-      input: input ?? this.input,
-      output: output ?? this.output,
-      error: error ?? this.error,
+      input: identical(input, _unset) ? this.input : input as String?,
+      output: identical(output, _unset) ? this.output : output as String?,
+      error: identical(error, _unset) ? this.error : error as String?,
       startedAt: startedAt ?? this.startedAt,
       completedAt: completedAt ?? this.completedAt,
     );

@@ -133,6 +133,14 @@ class _ChatInputBarState extends State<ChatInputBar> {
   FocusNode? _internalFocusNode;
   bool _hasText = false;
 
+  // Guards _submit() against firing twice for one logical send (rapid
+  // double-Enter or a fast double-tap on the send button). This matters most
+  // for an attachment-only send: widget.attachments is owned by the parent,
+  // so it only reflects a post-send removal once the parent rebuilds this
+  // widget -- until then a second _submit() call would still see the old,
+  // non-empty list and fire onSend('') again.
+  bool _sending = false;
+
   TextEditingController get _controller =>
       widget.controller ?? (_internalController ??= TextEditingController());
 
@@ -158,8 +166,16 @@ class _ChatInputBarState extends State<ChatInputBar> {
   }
 
   void _onTextChanged() {
+    if (!mounted) return;
     final hasText = _controller.text.trim().isNotEmpty;
-    if (hasText != _hasText && mounted) setState(() => _hasText = hasText);
+    final hasTextChanged = hasText != _hasText;
+    // The counter in build() reads _controller.text.length directly, so once
+    // maxLength is set it needs a rebuild on every keystroke -- not only when
+    // hasText flips between empty and non-empty -- or it freezes at whatever
+    // length happened to be showing on the last unrelated rebuild.
+    if (hasTextChanged || widget.maxLength != null) {
+      setState(() => _hasText = hasText);
+    }
   }
 
   @override
@@ -184,19 +200,40 @@ class _ChatInputBarState extends State<ChatInputBar> {
     };
   }
 
+  bool get _attachmentsUploading =>
+      widget.attachments.any((a) => a.isUploading);
+
   bool get _canSend =>
-      widget.enabled && (_hasText || widget.attachments.isNotEmpty);
+      widget.enabled &&
+      !_attachmentsUploading &&
+      (_hasText || widget.attachments.isNotEmpty);
 
   void _submit() {
-    if (!_canSend) return;
+    if (_sending || !_canSend) return;
+    _sending = true;
     final text = _controller.text.trim();
     widget.onSend(text);
     if (widget.clearOnSend) _controller.clear();
+    // The composer doesn't own the attachment list (it's supplied by the
+    // caller), so sending clears it by asking the caller to remove every
+    // attachment rather than mutating anything locally.
+    if (widget.onRemoveAttachment != null) {
+      for (var i = widget.attachments.length - 1; i >= 0; i--) {
+        widget.onRemoveAttachment!(i);
+      }
+    }
     if (widget.retainFocusOnSend) {
       _focusNode.requestFocus();
     } else {
       _focusNode.unfocus();
     }
+    // Released after this frame, by which point the parent's rebuild (e.g.
+    // clearing widget.attachments in response to onRemoveAttachment above)
+    // has landed -- that's what actually closes the race, not just a fixed
+    // delay.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _sending = false;
+    });
   }
 
   KeyEventResult _handleKey(FocusNode node, KeyEvent event) {

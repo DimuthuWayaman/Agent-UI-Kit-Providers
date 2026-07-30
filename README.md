@@ -3,6 +3,8 @@
 [![pub package](https://img.shields.io/pub/v/agent_ui_kit_providers.svg)](https://pub.dev/packages/agent_ui_kit_providers)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+![Streaming markdown chat bubble](screenshots/can_you_write_some_code_for_me.jpeg)
+
 Themeable Flutter widgets for AI chat and agent interfaces — streaming
 markdown bubbles, tool-call visualization, a themeable composer, and optional
 OpenRouter/Gemini provider integrations.
@@ -30,6 +32,7 @@ themeable kit, so you can wire it up instead of rebuilding it.
 ## Contents
 
 - [Sixty-second start](#sixty-second-start)
+- [Demo](#demo)
 - [Composing it yourself](#composing-it-yourself)
 - [Driving a response manually](#driving-a-response-manually)
 - [Providers](#providers)
@@ -63,6 +66,18 @@ ChatScreen(
 That gets you an empty state, streaming markdown, auto-scroll, copy/regenerate
 actions, and a stop button. No theme setup required — the kit reads your app's
 Material `ColorScheme` by default.
+
+## Demo
+
+Markdown streams in token-by-token, re-parsing only the newly appended tail
+instead of the whole document on every frame:
+
+![Streaming markdown reply](screenshots/streaming-markdown.gif)
+
+Tool calls surface as real, typed `ToolCall`s that move through
+`pending` → `running` → `success` as your app resolves them:
+
+![Tool call moving from pending to running to success](screenshots/tool-call-flow.gif)
 
 ## Composing it yourself
 
@@ -211,6 +226,8 @@ be renamed, pinned, deleted or searched. Persistence is yours — the kit ships
 no database. Listen to the controller and save `conversations.conversations`
 wherever you like.
 
+![History drawer with multiple conversations](screenshots/drawer.jpeg)
+
 ## Editing a prompt
 
 User messages carry an edit action. Rewriting one discards everything after it
@@ -242,6 +259,22 @@ await controller.editMessage(messageId, 'the corrected prompt');
 | `AgentAvatar` | Role-aware avatars |
 | `MessageActionBar` | Copy, regenerate, thumbs up/down |
 
+Bubble types, grouping and the thinking/streaming state:
+
+![Bubble types](screenshots/bubbles.jpeg)
+![Grouped bubbles and thinking state](screenshots/grouping_and_thinking_state.jpeg)
+
+Tool calls, markdown rendering, code blocks and citations:
+
+![Tool call states](screenshots/tool_calls.jpeg)
+![Markdown rendering](screenshots/markdown.jpeg)
+![Code block and citations](screenshots/code_and_citations.jpeg)
+
+Attachments, suggestion chips, avatars and the composer:
+
+![Attachments and suggestion chips](screenshots/attachments_and_suggestions.jpeg)
+![Avatars and composer](screenshots/avatar_and_composer.jpeg)
+
 ## Theming
 
 Themes are built from token groups — colors, typography, spacing, radii and
@@ -270,6 +303,8 @@ AnimatedAgentTheme(
   child: chatSurface,
 )
 ```
+
+![Light, dark and glass themes cross-fading](screenshots/theme-switch.gif)
 
 ## Markdown
 

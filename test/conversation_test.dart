@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:agent_ui_kit_providers/agent_ui_kit_providers.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -186,6 +188,69 @@ void main() {
       expect(controller.search('nothing'), isEmpty);
     });
 
+    test(
+      'does not duplicate messages when chat is already populated to match '
+      'initialConversations',
+      () {
+        final chat = ChatController(
+          initialMessages: [ChatMessage.user('restored question', id: 'm1')],
+        );
+        final saved = [Conversation(id: 'c1', messages: chat.messages)];
+        final controller = ConversationController(
+          chat: chat,
+          initialConversations: saved,
+        );
+        addTearDown(controller.dispose);
+
+        expect(controller.chat.messages, hasLength(1));
+      },
+    );
+
+    test('self-heals when given an activeId matching no conversation', () {
+      final controller = ConversationController(
+        initialConversations: [Conversation(id: 'c1')],
+        activeId: 'does-not-exist',
+      );
+      addTearDown(controller.dispose);
+
+      expect(controller.active, isNotNull);
+      expect(controller.activeId, isNot('does-not-exist'));
+    });
+
+    test('does not bump updatedAt on every streamed token', () async {
+      final source = StreamController<String>();
+      final controller = ConversationController(
+        chat: ChatController(responder: (_) => source.stream),
+      );
+      addTearDown(controller.dispose);
+
+      controller.newConversation();
+      unawaited(controller.chat.send('question'));
+      await Future<void>.delayed(Duration.zero);
+
+      final afterBegin = controller.active!.updatedAt;
+
+      source.add('a');
+      await Future<void>.delayed(Duration.zero);
+      source.add('b');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        controller.active!.updatedAt,
+        afterBegin,
+        reason: 'appending tokens mid-stream should not re-timestamp',
+      );
+
+      await source.close();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        controller.active!.updatedAt,
+        isNot(afterBegin),
+        reason: 'settling out of streaming should bump the timestamp',
+      );
+    });
+
     test('restores from persisted conversations', () {
       final saved = [
         Conversation(
@@ -247,6 +312,14 @@ void main() {
       expect(controller.messages, hasLength(2));
       expect(controller.messages[0].text, 'first question');
       expect(controller.messages[1].text, 'answer 2');
+      expect(
+        controller.messages[0].id,
+        id,
+        reason:
+            'a responder-attached edit must keep the original id, the same '
+            'as the no-responder path -- callers tracking a message by id '
+            'across an edit should see consistent behavior either way',
+      );
     });
 
     test('ignores edits to assistant messages', () async {

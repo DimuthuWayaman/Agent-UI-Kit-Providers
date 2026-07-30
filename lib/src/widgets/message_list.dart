@@ -66,6 +66,36 @@ class MessageList extends StatefulWidget {
   /// Formats timestamps. Defaults to 24-hour `HH:mm`.
   final TimestampFormatter? timestampFormatter;
 
+  /// Whether assistant bubbles show how long they took to respond. See
+  /// [ChatBubble.showResponseTime].
+  final bool showResponseTime;
+
+  /// Formats the response-time caption. See [ChatBubble.responseTimeFormatter].
+  final ResponseTimeFormatter? responseTimeFormatter;
+
+  /// Text style for the response-time caption. See
+  /// [ChatBubble.responseTimeStyle].
+  final TextStyle? responseTimeStyle;
+
+  /// Icon shown before the response-time caption. See
+  /// [ChatBubble.responseTimeIcon].
+  final IconData responseTimeIcon;
+
+  /// Formats the interrupted-message caption. See
+  /// [ChatBubble.interruptedFormatter].
+  final InterruptedFormatter? interruptedFormatter;
+
+  /// Icon shown next to the interrupted-message caption. See
+  /// [ChatBubble.interruptedIcon].
+  final IconData interruptedIcon;
+
+  /// Color for the interrupted indicator. See [ChatBubble.interruptedColor].
+  final Color? interruptedColor;
+
+  /// Text style for the interrupted-message caption. See
+  /// [ChatBubble.interruptedTextStyle].
+  final TextStyle? interruptedTextStyle;
+
   /// Called when a markdown link is tapped.
   final ValueChanged<String>? onLinkTap;
 
@@ -125,6 +155,14 @@ class MessageList extends StatefulWidget {
     this.showTimestamps = false,
     this.showActions = false,
     this.timestampFormatter,
+    this.showResponseTime = false,
+    this.responseTimeFormatter,
+    this.responseTimeStyle,
+    this.responseTimeIcon = Icons.timer_outlined,
+    this.interruptedFormatter,
+    this.interruptedIcon = Icons.stop_circle_outlined,
+    this.interruptedColor,
+    this.interruptedTextStyle,
     this.onLinkTap,
     this.onRegenerate,
     this.onRetry,
@@ -266,7 +304,14 @@ class _MessageListState extends State<MessageList> {
     final messages = widget.messages;
 
     if (messages.isEmpty && widget.emptyState != null) {
-      return widget.emptyState!;
+      // Matches the padding the ListView below would otherwise apply, so the
+      // empty state also clears a frosted app bar or composer overlaid on
+      // top of this list rather than rendering underneath them.
+      return Padding(
+        padding:
+            widget.padding ?? EdgeInsets.symmetric(vertical: theme.spacing.md),
+        child: widget.emptyState!,
+      );
     }
 
     final hasHeader = widget.header != null;
@@ -339,6 +384,14 @@ class _MessageListState extends State<MessageList> {
                     (groupPosition == BubbleGroupPosition.single ||
                         groupPosition == BubbleGroupPosition.last),
                 timestampFormatter: widget.timestampFormatter,
+                showResponseTime: widget.showResponseTime,
+                responseTimeFormatter: widget.responseTimeFormatter,
+                responseTimeStyle: widget.responseTimeStyle,
+                responseTimeIcon: widget.responseTimeIcon,
+                interruptedFormatter: widget.interruptedFormatter,
+                interruptedIcon: widget.interruptedIcon,
+                interruptedColor: widget.interruptedColor,
+                interruptedTextStyle: widget.interruptedTextStyle,
                 showActions: widget.showActions,
                 onLinkTap: widget.onLinkTap,
                 onRegenerate: widget.onRegenerate == null

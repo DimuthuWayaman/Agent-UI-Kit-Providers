@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../models/chat_message.dart';
 import '../models/conversation.dart';
 import 'chat_controller.dart';
 
@@ -42,18 +43,24 @@ class ConversationController extends ChangeNotifier {
         _conversations =
             List<Conversation>.from(initialConversations ?? const []) {
     _activeId = activeId ?? _conversations.firstOrNull?.id;
+    final existingActive = _activeId == null ? null : _byId(_activeId!);
 
-    if (_activeId == null) {
+    if (existingActive == null) {
       // There must always be somewhere to file messages. Without an active
       // thread from the start, anything sent straight through [chat] — which
       // is exactly what ChatScreen does — would be dropped on the floor
-      // instead of recorded in history.
+      // instead of recorded in history. This also self-heals an explicit
+      // [activeId] that doesn't match any entry in [initialConversations].
       final initial = Conversation(id: _generateId());
       _conversations.add(initial);
       _activeId = initial.id;
-    } else {
-      final active = _byId(_activeId!);
-      if (active != null) this.chat.addMessages(active.messages);
+    } else if (this.chat.messages.isEmpty) {
+      // Only load stored messages into an empty controller. A caller that
+      // hands in a pre-populated `chat` alongside a matching
+      // `initialConversations` entry (e.g. rehydrating both from storage)
+      // already has the right state in `chat` — adding again here would
+      // duplicate every message.
+      this.chat.addMessages(existingActive.messages);
     }
 
     this.chat.addListener(_syncActive);
@@ -107,11 +114,21 @@ class ConversationController extends ChangeNotifier {
     final existing = _conversations[index];
     final messages = chat.messages;
 
+    // Bump the timestamp only for events worth re-sorting the history list
+    // over: a message being added, or a message settling out of streaming
+    // (completed/failed). Bumping on every intermediate token would re-sort
+    // the list on each chunk of a live response.
+    final countChanged = messages.length != existing.messages.length;
+    final lastSettled = messages.isNotEmpty &&
+        messages.last.status != MessageStatus.streaming &&
+        (existing.messages.isEmpty ||
+            existing.messages.last.status == MessageStatus.streaming);
+
     _conversations[index] = existing.copyWith(
       messages: messages,
-      // Only bump the timestamp when something actually arrived, so merely
-      // opening a thread does not reorder the history list.
-      updatedAt: messages.isEmpty ? existing.updatedAt : DateTime.now(),
+      updatedAt: (countChanged || lastSettled)
+          ? DateTime.now()
+          : existing.updatedAt,
     );
     _safeNotify();
   }

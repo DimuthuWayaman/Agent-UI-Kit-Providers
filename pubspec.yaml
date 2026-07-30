@@ -1,9 +1,8 @@
 name: agent_ui_kit_providers
 description: >-
-  Themeable Flutter widgets for AI chat and agent interfaces: streaming
-  markdown bubbles, tool-call visualization, a themeable composer, and
-  optional OpenRouter/Gemini provider integrations.
-version: 1.0.0
+  Themeable Flutter widgets for AI chat: streaming markdown bubbles,
+  tool-call cards, a composer, and optional OpenRouter/Gemini providers.
+version: 1.1.0
 repository: https://github.com/DimuthuWayaman/Agent-UI-Kit-Providers
 issue_tracker: https://github.com/DimuthuWayaman/Agent-UI-Kit-Providers/issues
 homepage: https://github.com/DimuthuWayaman/Agent-UI-Kit-Providers
@@ -15,6 +14,16 @@ topics:
   - llm
   - openrouter
   - gemini
+
+screenshots:
+  - description: 'Streaming markdown chat bubble with tool calls and citations'
+    path: screenshots/can_you_write_some_code_for_me.jpeg
+  - description: 'Tool-call visualization states'
+    path: screenshots/tool_calls.jpeg
+  - description: 'Full markdown rendering: tables, code, task lists, blockquotes'
+    path: screenshots/markdown.jpeg
+  - description: 'Bubble types, grouping and thinking/streaming state'
+    path: screenshots/grouping_and_thinking_state.jpeg
 
 environment:
   sdk: '>=3.3.0 <4.0.0'

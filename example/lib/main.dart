@@ -87,6 +87,8 @@ class _DemoAppState extends State<DemoApp> {
           useMaterial3: true,
           brightness: agentTheme.brightness,
           colorScheme: ColorScheme.fromSeed(
+            primary: Color.fromARGB(
+                255, 2, 92, 196), // Replace with actual primary color
             seedColor: agentTheme.colors.accent,
             brightness: agentTheme.brightness,
           ),
@@ -192,8 +194,7 @@ class MenuPage extends StatelessWidget {
             _MenuCard(
               icon: Icons.forum_rounded,
               title: 'Chat demo',
-              subtitle:
-                  'Streaming markdown, tool calls, editing and history.',
+              subtitle: 'Streaming markdown, tool calls, editing and history.',
               onTap: () => _open(
                 context,
                 ChatDemoPage(theme: theme, conversations: conversations),
@@ -320,7 +321,7 @@ class _MenuCard extends StatelessWidget {
 }
 
 /// The chat demo, opened full screen from [MenuPage].
-class ChatDemoPage extends StatelessWidget {
+class ChatDemoPage extends StatefulWidget {
   /// The active demo theme, used to decide whether to draw the glass backdrop.
   final DemoTheme theme;
 
@@ -334,27 +335,71 @@ class ChatDemoPage extends StatelessWidget {
   });
 
   @override
+  State<ChatDemoPage> createState() => _ChatDemoPageState();
+}
+
+class _ChatDemoPageState extends State<ChatDemoPage> {
+  // Owned here (not by the kit) so the composer's attachment tray behaves
+  // like a real integration would: the attach button adds one, the remove
+  // affordance and a successful send both take it back out again.
+  List<Attachment> _attachments = [
+    Attachment(id: '1', name: 'example.pdf'),
+  ];
+
+  void _addAttachment() {
+    setState(() {
+      _attachments = [
+        ..._attachments,
+        Attachment(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            name: 'example.pdf'),
+      ];
+    });
+  }
+
+  void _removeAttachment(int index) {
+    setState(() {
+      _attachments = [..._attachments]..removeAt(index);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return ChatScreen(
-      controller: conversations.chat,
-      conversations: conversations,
+      controller: widget.conversations.chat,
+      conversations: widget.conversations,
       title: 'Chat demo',
       emptySubtitle: 'A demo agent. Ask anything — it fakes a streamed reply '
           'with markdown, a tool call and citations.',
       suggestions: FakeAgent.starters,
       followUps: FakeAgent.followUps,
       showTimestamps: true,
-      onAttach: () => _snack(context, 'Wire this to file_picker'),
+      onAttach: _addAttachment,
       onVoice: () => _snack(context, 'Wire this to speech_to_text'),
       onLinkTap: (url) => _snack(context, 'Open $url'),
       onFeedback: (message, feedback) =>
           _snack(context, 'Recorded ${feedback.name} feedback'),
-      background: theme == DemoTheme.glass ? const GlassBackdrop() : null,
+      background:
+          widget.theme == DemoTheme.glass ? const GlassBackdrop() : null,
       showAvatars: true,
-      userAvatar: const CircleAvatar(
-        backgroundColor: Colors.blue,
-        child: Icon(Icons.person, color: Colors.white),
-      )
+      userAvatar: CircleAvatar(
+        radius: 14,
+        backgroundColor:
+            Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
+        child: Icon(Icons.person,
+            color: Theme.of(context).colorScheme.primary, size: 16),
+      ),
+      attachments: _attachments,
+      onRemoveAttachment: _removeAttachment,
+      historyDrawerBuilder: widget.theme == DemoTheme.glass
+          ? null
+          : (context, conversations) => ChatHistoryDrawer(
+                showSearch: true,
+                searchThreshold: 0,
+                controller: conversations,
+                onSelected: () => Navigator.of(context).maybePop(),
+              ),
+      showResponseTime: true,
     );
   }
 

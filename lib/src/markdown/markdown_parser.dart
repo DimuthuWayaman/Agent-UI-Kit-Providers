@@ -14,7 +14,14 @@ class MarkdownParseResult {
   /// The exact source string these blocks were produced from.
   final String source;
 
-  const MarkdownParseResult(this.blocks, this.source);
+  /// Whether these blocks were produced with `streaming: true`.
+  ///
+  /// Kept alongside the parse so [MarkdownParser.parseIncremental] can tell
+  /// a stale mid-stream result (which may have withheld ambiguous trailing
+  /// syntax) from one produced for the same source once streaming ended.
+  final bool streaming;
+
+  const MarkdownParseResult(this.blocks, this.source, {this.streaming = false});
 }
 
 /// A small, dependency-free markdown parser covering the subset that language
@@ -31,9 +38,19 @@ class MarkdownParser {
   const MarkdownParser._();
 
   /// Parses [source] from scratch.
-  static List<MdBlock> parse(String source) {
+  ///
+  /// [streaming] should be `true` while [source] may still grow with more
+  /// text. It relaxes how ambiguous trailing syntax is treated: an unclosed
+  /// `**`/`_`/`~~`/`` ` `` span renders optimistically as already-formatted
+  /// instead of showing its literal delimiter characters, and a table header
+  /// with no delimiter row yet is withheld rather than shown as a raw-pipe
+  /// paragraph — both would otherwise flash raw markdown for a moment before
+  /// the closing syntax streams in. Once `false`, any leftover ambiguous
+  /// syntax renders literally so a finished message never silently drops
+  /// content.
+  static List<MdBlock> parse(String source, {bool streaming = false}) {
     final lines = _splitLines(source);
-    return _parseBlocks(lines, 0, lines.length);
+    return _parseBlocks(lines, 0, lines.length, streaming: streaming);
   }
 
   /// Parses [source], reusing [previous] when it is a prefix of the new text.
@@ -48,14 +65,26 @@ class MarkdownParser {
   /// second-to-last block and not just the last one. The effect cannot cascade
   /// further back — two adjacent lists would already have been parsed as one —
   /// so one block of slack is also sufficient.
+  ///
+  /// See [parse] for what [streaming] does. If it differs from the flag
+  /// [previous] was produced with, the cache is discarded and the source is
+  /// re-parsed in full — otherwise a mid-stream result that withheld
+  /// ambiguous trailing syntax could be served back as-is after streaming
+  /// ends, permanently hiding that content.
   static MarkdownParseResult parseIncremental(
     String source,
-    MarkdownParseResult? previous,
-  ) {
+    MarkdownParseResult? previous, {
+    bool streaming = false,
+  }) {
     if (previous == null ||
         previous.blocks.isEmpty ||
+        previous.streaming != streaming ||
         !source.startsWith(previous.source)) {
-      return MarkdownParseResult(parse(source), source);
+      return MarkdownParseResult(
+        parse(source, streaming: streaming),
+        source,
+        streaming: streaming,
+      );
     }
     if (source.length == previous.source.length) return previous;
 
@@ -65,14 +94,14 @@ class MarkdownParser {
     final stable = previous.blocks.take(resumeIndex).toList();
 
     final tail = source.substring(resumeAt);
-    final tailBlocks = parse(tail);
+    final tailBlocks = parse(tail, streaming: streaming);
 
     // Blocks from the tail carry offsets relative to it; shift them back into
     // document coordinates so a later incremental pass resumes correctly.
     for (final block in tailBlocks) {
       stable.add(_shift(block, resumeAt));
     }
-    return MarkdownParseResult(stable, source);
+    return MarkdownParseResult(stable, source, streaming: streaming);
   }
 
   static MdBlock _shift(MdBlock block, int delta) {
@@ -82,7 +111,13 @@ class MarkdownParser {
       final MdHeading b => MdHeading(b.level, b.spans, at),
       final MdCodeBlock b => MdCodeBlock(b.language, b.code, b.closed, at),
       final MdList b => MdList(b.ordered, b.start, b.items, at),
-      final MdQuote b => MdQuote(b.children, at),
+      // Nested blocks carry their own sourceStart relative to the same tail
+      // substring as their parent, so they need shifting too -- recursing
+      // also rebases any further nesting (a quote inside a quote).
+      final MdQuote b => MdQuote(
+          [for (final child in b.children) _shift(child, delta)],
+          at,
+        ),
       MdRule _ => MdRule(at),
       final MdTable b => MdTable(b.header, b.rows, b.alignments, at),
     };
@@ -109,7 +144,12 @@ class MarkdownParser {
     return lines;
   }
 
-  static List<MdBlock> _parseBlocks(List<_Line> lines, int from, int to) {
+  static List<MdBlock> _parseBlocks(
+    List<_Line> lines,
+    int from,
+    int to, {
+    bool streaming = false,
+  }) {
     final blocks = <MdBlock>[];
     var i = from;
 
@@ -161,7 +201,11 @@ class MarkdownParser {
       final heading = _atxHeading(trimmed);
       if (heading != null) {
         blocks.add(
-          MdHeading(heading.$1, parseInline(heading.$2), line.start),
+          MdHeading(
+            heading.$1,
+            parseInline(heading.$2, streaming: streaming),
+            line.start,
+          ),
         );
         i++;
         continue;
@@ -183,27 +227,47 @@ class MarkdownParser {
           if (content.startsWith(' ')) content = content.substring(1);
           inner.add(_Line(content, lines[j].start));
         }
-        blocks.add(MdQuote(_parseBlocks(inner, 0, inner.length), line.start));
+        blocks.add(
+          MdQuote(
+            _parseBlocks(inner, 0, inner.length, streaming: streaming),
+            line.start,
+          ),
+        );
         i = j;
         continue;
       }
 
       // Pipe table: needs a delimiter row directly beneath the header.
-      if (line.text.contains('|') &&
-          i + 1 < to &&
-          _isTableDelimiter(lines[i + 1].text)) {
-        final alignments = _parseAlignments(lines[i + 1].text);
-        final header = _splitRow(line.text).map(parseInline).toList();
-        final rows = <List<List<MdInline>>>[];
-        var j = i + 2;
-        for (; j < to; j++) {
-          final t = lines[j].text.trim();
-          if (t.isEmpty || !t.contains('|')) break;
-          rows.add(_splitRow(lines[j].text).map(parseInline).toList());
+      if (line.text.contains('|')) {
+        if (i + 1 < to && _isTableDelimiter(lines[i + 1].text)) {
+          final alignments = _parseAlignments(lines[i + 1].text);
+          final header = _splitRow(line.text)
+              .map((c) => parseInline(c, streaming: streaming))
+              .toList();
+          final rows = <List<List<MdInline>>>[];
+          var j = i + 2;
+          for (; j < to; j++) {
+            final t = lines[j].text.trim();
+            if (t.isEmpty || !t.contains('|')) break;
+            rows.add(
+              _splitRow(lines[j].text)
+                  .map((c) => parseInline(c, streaming: streaming))
+                  .toList(),
+            );
+          }
+          blocks.add(MdTable(header, rows, alignments, line.start));
+          i = j;
+          continue;
         }
-        blocks.add(MdTable(header, rows, alignments, line.start));
-        i = j;
-        continue;
+        // While streaming, a header-shaped row with no delimiter row yet is
+        // ambiguous -- it might become a table once the next line arrives,
+        // or might just be prose with pipes in it. Withhold it instead of
+        // briefly rendering the raw `|` characters as a paragraph; it
+        // resolves one way or the other once more text streams in, or
+        // renders as a plain paragraph once streaming ends.
+        if (streaming && i + 1 == to && _pipeCount(line.text) >= 2) {
+          break;
+        }
       }
 
       // Lists.
@@ -223,7 +287,11 @@ class MarkdownParser {
               final last = items.removeLast();
               items.add(
                 MdListItem(
-                  [...last.spans, const MdText(' '), ...parseInline(t)],
+                  [
+                    ...last.spans,
+                    const MdText(' '),
+                    ...parseInline(t, streaming: streaming),
+                  ],
                   last.depth,
                   checked: last.checked,
                 ),
@@ -235,7 +303,7 @@ class MarkdownParser {
           if (marker.ordered != ordered) break;
           items.add(
             MdListItem(
-              parseInline(marker.content),
+              parseInline(marker.content, streaming: streaming),
               marker.depth,
               checked: marker.checked,
             ),
@@ -264,7 +332,13 @@ class MarkdownParser {
               _atxHeading(t) != null ||
               _isRule(t) ||
               t.startsWith('>') ||
-              _listMarker(lines[j].text) != null) {
+              _listMarker(lines[j].text) != null ||
+              // A table header directly touching the paragraph (no blank
+              // line) must start a new block, not be swallowed as paragraph
+              // text -- mirrors the same lookahead the outer block loop uses.
+              (lines[j].text.contains('|') &&
+                  j + 1 < to &&
+                  _isTableDelimiter(lines[j + 1].text))) {
             break;
           }
         }
@@ -273,8 +347,8 @@ class MarkdownParser {
       final text = buffer.join('\n');
       blocks.add(
         level > 0
-            ? MdHeading(level, parseInline(text), line.start)
-            : MdParagraph(parseInline(text), line.start),
+            ? MdHeading(level, parseInline(text, streaming: streaming), line.start)
+            : MdParagraph(parseInline(text, streaming: streaming), line.start),
       );
       i = j;
     }
@@ -324,6 +398,8 @@ class MarkdownParser {
     return RegExp(r'^\|?[\s:|-]+\|?$').hasMatch(t) &&
         RegExp(r'-{1,}').hasMatch(t);
   }
+
+  static int _pipeCount(String line) => '|'.allMatches(line).length;
 
   static List<MdAlign> _parseAlignments(String line) {
     return _splitRow(line).map((cell) {
@@ -413,7 +489,14 @@ class MarkdownParser {
   // -------------------------------------------------------------------
 
   /// Parses inline markdown within a single block's text.
-  static List<MdInline> parseInline(String text) {
+  ///
+  /// When [streaming] is `true`, an inline code/strikethrough/emphasis span
+  /// whose closing delimiter hasn't streamed in yet renders optimistically —
+  /// the rest of the text is treated as the span's (still-growing) content
+  /// instead of showing the literal opening delimiter characters. When
+  /// `false`, an unclosed span falls back to literal text, matching plain
+  /// CommonMark behavior for genuinely malformed/final markdown.
+  static List<MdInline> parseInline(String text, {bool streaming = false}) {
     final out = <MdInline>[];
     final buffer = StringBuffer();
 
@@ -456,6 +539,12 @@ class MarkdownParser {
           i = close + run;
           continue;
         }
+        if (streaming) {
+          flush();
+          out.add(MdCode(text.substring(i + run).trim()));
+          i = text.length;
+          continue;
+        }
       }
 
       // Image.
@@ -474,7 +563,9 @@ class MarkdownParser {
         final parsed = _parseLink(text, i);
         if (parsed != null) {
           flush();
-          out.add(MdLink(parseInline(parsed.$1), parsed.$2));
+          out.add(
+            MdLink(parseInline(parsed.$1, streaming: streaming), parsed.$2),
+          );
           i = parsed.$3;
           continue;
         }
@@ -487,11 +578,22 @@ class MarkdownParser {
           flush();
           out.add(
             MdEmphasis(
-              parseInline(text.substring(i + 2, close)),
+              parseInline(text.substring(i + 2, close), streaming: streaming),
               strikethrough: true,
             ),
           );
           i = close + 2;
+          continue;
+        }
+        if (streaming) {
+          flush();
+          out.add(
+            MdEmphasis(
+              parseInline(text.substring(i + 2), streaming: streaming),
+              strikethrough: true,
+            ),
+          );
+          i = text.length;
           continue;
         }
       }
@@ -510,11 +612,24 @@ class MarkdownParser {
             flush();
             final inner = parseInline(
               text.substring(i + delimiter.length, close),
+              streaming: streaming,
             );
             out.add(
               MdEmphasis(inner, bold: double, italic: !double),
             );
             i = close + delimiter.length;
+            continue;
+          }
+          if (streaming) {
+            flush();
+            final inner = parseInline(
+              text.substring(i + delimiter.length),
+              streaming: streaming,
+            );
+            out.add(
+              MdEmphasis(inner, bold: double, italic: !double),
+            );
+            i = text.length;
             continue;
           }
         }

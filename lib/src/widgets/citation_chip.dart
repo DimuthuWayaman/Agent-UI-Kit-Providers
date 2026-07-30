@@ -41,7 +41,7 @@ class CitationChip extends StatelessWidget {
           borderRadius: BorderRadius.circular(100),
           child: Container(
             padding: EdgeInsets.symmetric(
-              horizontal: theme.spacing.sm,
+              horizontal: theme.spacing.xs,
               vertical: 4,
             ),
             decoration: BoxDecoration(

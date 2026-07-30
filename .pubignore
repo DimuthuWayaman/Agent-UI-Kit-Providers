@@ -8,3 +8,8 @@ example/.dart_tool/
 .idea/
 .vscode/
 CLAUDE.md
+
+# Raw screen recordings kept for provenance only -- the README embeds the
+# converted GIFs (resolved from GitHub, not the published archive), and the
+# pubspec `screenshots:` carousel only needs the JPEGs.
+screenshots/*.mp4

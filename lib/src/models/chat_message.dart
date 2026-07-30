@@ -4,6 +4,10 @@ import 'attachment.dart';
 import 'citation.dart';
 import 'tool_call.dart';
 
+/// Sentinel default for a `copyWith` parameter, distinguishing "omitted" (use
+/// the current value) from an explicit `null` (clear the field).
+const Object _unset = Object();
+
 /// Who authored a message.
 enum ChatRole {
   /// The human using the app.
@@ -29,6 +33,12 @@ enum MessageStatus {
 
   /// Send or generation failed. [ChatMessage.error] carries the reason.
   failed,
+
+  /// Generation was stopped by the user before it finished.
+  ///
+  /// Set by `ChatController.stop()`. Distinct from [failed] — nothing went
+  /// wrong, the response was just cut short.
+  stopped,
 }
 
 /// A single message in a conversation.
@@ -53,6 +63,12 @@ class ChatMessage {
 
   /// When the message was created.
   final DateTime createdAt;
+
+  /// When the message stopped receiving updates — set when it leaves
+  /// [MessageStatus.streaming], whether by finishing normally, being
+  /// stopped, or failing. Null while streaming (or for a message that was
+  /// never streamed at all).
+  final DateTime? completedAt;
 
   /// Tool calls made while producing this message.
   final List<ToolCall> toolCalls;
@@ -82,6 +98,7 @@ class ChatMessage {
     this.text = '',
     this.status = MessageStatus.sent,
     DateTime? createdAt,
+    this.completedAt,
     List<ToolCall>? toolCalls,
     List<Attachment>? attachments,
     List<Citation>? citations,
@@ -144,6 +161,15 @@ class ChatMessage {
   /// Whether this message failed.
   bool get hasFailed => status == MessageStatus.failed;
 
+  /// Whether generation was stopped by the user before it finished.
+  bool get wasStopped => status == MessageStatus.stopped;
+
+  /// How long generation took, from [createdAt] to [completedAt].
+  ///
+  /// Null while streaming, or for a message that never recorded a
+  /// [completedAt] (e.g. one constructed directly with a terminal status).
+  Duration? get responseTime => completedAt?.difference(createdAt);
+
   /// True when there is nothing to render yet — no text, no tools, no files.
   ///
   /// An assistant message in this state is waiting on its first token, which
@@ -157,16 +183,23 @@ class ChatMessage {
   /// accidentally write `copyWith(text: chunk)` and drop prior tokens.
   ChatMessage appendText(String chunk) => copyWith(text: text + chunk);
 
+  /// Returns a copy with the given fields replaced.
+  ///
+  /// [error] defaults to a sentinel rather than `null`, so omitting it
+  /// preserves the current value while passing `null` explicitly clears it
+  /// — e.g. `copyWith(status: MessageStatus.streaming, error: null)` clears a
+  /// previous failure when regenerating in place.
   ChatMessage copyWith({
     String? id,
     ChatRole? role,
     String? text,
     MessageStatus? status,
     DateTime? createdAt,
+    DateTime? completedAt,
     List<ToolCall>? toolCalls,
     List<Attachment>? attachments,
     List<Citation>? citations,
-    String? error,
+    Object? error = _unset,
     bool? isMarkdown,
     Map<String, Object?>? metadata,
   }) {
@@ -176,10 +209,11 @@ class ChatMessage {
       text: text ?? this.text,
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
+      completedAt: completedAt ?? this.completedAt,
       toolCalls: toolCalls ?? this.toolCalls,
       attachments: attachments ?? this.attachments,
       citations: citations ?? this.citations,
-      error: error ?? this.error,
+      error: identical(error, _unset) ? this.error : error as String?,
       isMarkdown: isMarkdown ?? this.isMarkdown,
       metadata: metadata ?? this.metadata,
     );
@@ -207,6 +241,7 @@ class ChatMessage {
         other.text == text &&
         other.status == status &&
         other.createdAt == createdAt &&
+        other.completedAt == completedAt &&
         listEquals(other.toolCalls, toolCalls) &&
         listEquals(other.attachments, attachments) &&
         listEquals(other.citations, citations) &&
@@ -221,6 +256,7 @@ class ChatMessage {
         text,
         status,
         createdAt,
+        completedAt,
         Object.hashAll(toolCalls),
         Object.hashAll(attachments),
         Object.hashAll(citations),

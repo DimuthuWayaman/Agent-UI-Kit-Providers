@@ -51,6 +51,8 @@ void main() {
       controller.completeMessage(id);
       expect(controller.isStreaming, isFalse);
       expect(controller.messageById(id)!.status, MessageStatus.sent);
+      expect(controller.messageById(id)!.completedAt, isNotNull);
+      expect(controller.messageById(id)!.responseTime, isNotNull);
     });
 
     test('ignores updates for a message that no longer exists', () {
@@ -106,7 +108,10 @@ void main() {
 
       expect(controller.isStreaming, isFalse);
       expect(controller.messages.last.text, 'partial');
-      expect(controller.messages.last.status, MessageStatus.sent);
+      expect(controller.messages.last.status, MessageStatus.stopped);
+      expect(controller.messages.last.wasStopped, isTrue);
+      expect(controller.messages.last.completedAt, isNotNull);
+      expect(controller.messages.last.responseTime, isNotNull);
 
       await source.close();
     });
@@ -171,6 +176,46 @@ void main() {
       expect(controller.messages, isEmpty);
     });
 
+    test(
+      'await send completes rather than hanging when stopped mid-stream',
+      () async {
+        final source = StreamController<String>();
+        final controller = ChatController(responder: (_) => source.stream);
+        addTearDown(controller.dispose);
+
+        final future = controller.send('question');
+        await Future<void>.delayed(Duration.zero);
+
+        source.add('partial');
+        await Future<void>.delayed(Duration.zero);
+
+        controller.stop();
+
+        await future.timeout(
+          const Duration(seconds: 1),
+          onTimeout: () =>
+              fail('send() never completed after stop() cancelled it'),
+        );
+
+        await source.close();
+      },
+    );
+
+    test(
+      'retryLast throws without deleting history when no responder is '
+      'attached',
+      () async {
+        final controller = ChatController();
+        addTearDown(controller.dispose);
+
+        controller.addMessage(ChatMessage.user('question'));
+        controller.addMessage(ChatMessage.assistant('answer'));
+
+        await expectLater(controller.retryLast(), throwsStateError);
+        expect(controller.messages, hasLength(2));
+      },
+    );
+
     test('retryLast removes the failed reply and re-sends', () async {
       var attempt = 0;
       final controller = ChatController(
@@ -230,6 +275,62 @@ void main() {
       final ids = List.generate(500, (_) => ChatMessage.user('x').id).toSet();
       expect(ids, hasLength(500));
     });
+
+    test('responseTime is null until completedAt is set', () {
+      final createdAt = DateTime(2024, 1, 1, 12, 0, 0);
+      final message = ChatMessage.assistant(
+        'hi',
+        status: MessageStatus.streaming,
+      ).copyWith(createdAt: createdAt);
+      expect(message.responseTime, isNull);
+
+      final completed = message.copyWith(
+        status: MessageStatus.sent,
+        completedAt: createdAt.add(const Duration(milliseconds: 1500)),
+      );
+      expect(completed.responseTime, const Duration(milliseconds: 1500));
+    });
+
+    test('copyWith preserves completedAt when omitted', () {
+      final completedAt = DateTime(2024, 1, 1, 12, 0, 2);
+      final message =
+          ChatMessage.assistant('hi').copyWith(completedAt: completedAt);
+
+      final next = message.copyWith(text: 'hi there');
+      expect(next.completedAt, completedAt);
+    });
+
+    test('wasStopped reflects MessageStatus.stopped', () {
+      final message =
+          ChatMessage.assistant('x').copyWith(status: MessageStatus.stopped);
+      expect(message.wasStopped, isTrue);
+      expect(message.hasFailed, isFalse);
+    });
+
+    test('copyWith can explicitly clear error back to null', () {
+      final failed = ChatMessage.assistant('x').copyWith(
+        status: MessageStatus.failed,
+        error: 'boom',
+      );
+      expect(failed.error, 'boom');
+
+      final omitted = failed.copyWith(status: MessageStatus.sent);
+      expect(
+        omitted.error,
+        'boom',
+        reason: 'omitting error must preserve the previous value',
+      );
+
+      final cleared = failed.copyWith(
+        status: MessageStatus.streaming,
+        error: null,
+      );
+      expect(
+        cleared.error,
+        isNull,
+        reason: 'passing error explicitly must be able to clear it',
+      );
+    });
   });
 
   group('ToolCall', () {
@@ -260,6 +361,31 @@ void main() {
       const done = ToolCall(id: 't', name: 'n', status: ToolCallStatus.success);
       expect(running.isFinished, isFalse);
       expect(done.isFinished, isTrue);
+    });
+
+    test('copyWith can explicitly clear error/input/output back to null', () {
+      const failed = ToolCall(
+        id: 't',
+        name: 'n',
+        status: ToolCallStatus.error,
+        input: '{}',
+        output: 'partial',
+        error: 'boom',
+      );
+
+      final omitted = failed.copyWith(status: ToolCallStatus.running);
+      expect(omitted.error, 'boom');
+      expect(omitted.input, '{}');
+      expect(omitted.output, 'partial');
+
+      final retried = failed.copyWith(
+        status: ToolCallStatus.running,
+        error: null,
+        output: null,
+      );
+      expect(retried.error, isNull);
+      expect(retried.output, isNull);
+      expect(retried.input, '{}', reason: 'input was not asked to clear');
     });
   });
 

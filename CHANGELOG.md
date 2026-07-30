@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.0
+
+### Fixes
+
+- **`ChatController`** — streams could keep delivering tokens after `stop()`, `removeMessage()` or
+  `dispose()`; unfinished tool calls are now reliably marked cancelled and subscriptions torn down in all
+  three paths.
+- **`ConversationController`** — loading `initialConversations` whose messages already existed in the live
+  `ChatController` could duplicate them; now guarded.
+- **`ChatInputBar`** — guarded against double-submit, fixed the character counter not updating when
+  `maxLength` is set, and attachments are now cleared via `onRemoveAttachment` on send.
+
+### Features
+
+- **Streaming-aware markdown** — `MarkdownView`/`MarkdownParser` gained an `isStreaming` flag that
+  optimistically renders unclosed `**`/`_`/`~~`/`` ` `` spans and pending table headers while a reply is
+  still arriving, instead of showing the raw markers until the closing token lands.
+- **Response time and interrupted state** — `ChatBubble`/`MessageList` can show how long a reply took
+  (`ChatMessage.responseTime`) and an "Interrupted" caption for messages ended by `stop()`
+  (`ChatMessage.wasStopped`).
+- **`GeminiProvider`** — added image attachment support (inline data and file-data parts).
+- **`ChatScreen`** — added `showHistory` and `historyDrawerBuilder` to customize or suppress the history
+  drawer.
+- **`ChatMessage`/`ToolCall`** — `copyWith` now distinguishes an omitted argument from an explicit `null`,
+  so `error`/`input`/`output` can be cleared intentionally.
+
+### Docs
+
+- README now includes screenshots and GIFs throughout (streaming reply, tool-call round trip, theme
+  switching, widget gallery), and `pubspec.yaml` gained a `screenshots:` carousel entry for the pub.dev
+  package page.
+
 ## 1.0.0
 
 Initial release.

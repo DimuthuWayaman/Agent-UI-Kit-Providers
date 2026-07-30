@@ -43,6 +43,7 @@ class ChatController extends ChangeNotifier {
   final AgentResponder? _responder;
 
   StreamSubscription<String>? _subscription;
+  Completer<void>? _consumeCompleter;
   String? _streamingMessageId;
   bool _disposed = false;
 
@@ -86,20 +87,30 @@ class ChatController extends ChangeNotifier {
   }
 
   /// Appends several messages in one notification.
+  ///
+  /// Does nothing for an empty iterable, so no-op calls (a common shape when
+  /// callers pass through a possibly-empty history) don't trigger a rebuild.
   void addMessages(Iterable<ChatMessage> messages) {
-    _messages.addAll(messages);
+    final list = messages is List<ChatMessage> ? messages : messages.toList();
+    if (list.isEmpty) return;
+    _messages.addAll(list);
     _safeNotify();
   }
 
   /// Replaces the message with [id] by applying [update] to it.
   ///
   /// Does nothing when no such message exists, so late-arriving stream events
-  /// for a removed message are harmless.
-  void updateMessage(String id, ChatMessage Function(ChatMessage) update) {
+  /// for a removed message are harmless. Returns whether the message actually
+  /// changed, so callers driving several updates in one logical action (see
+  /// [stop]) can notify exactly once instead of once per sub-update.
+  bool updateMessage(String id, ChatMessage Function(ChatMessage) update) {
     final index = _messages.indexWhere((m) => m.id == id);
-    if (index < 0) return;
-    _messages[index] = update(_messages[index]);
+    if (index < 0) return false;
+    final updated = update(_messages[index]);
+    if (updated == _messages[index]) return false;
+    _messages[index] = updated;
     _safeNotify();
+    return true;
   }
 
   /// Removes the message with [id].
@@ -114,6 +125,7 @@ class ChatController extends ChangeNotifier {
 
   /// Clears the conversation and cancels any in-flight stream.
   void clear() {
+    if (_messages.isEmpty && _subscription == null) return;
     _cancelSubscription();
     _messages.clear();
     _safeNotify();
@@ -154,24 +166,34 @@ class ChatController extends ChangeNotifier {
 
   /// Marks the message with [id] as finished.
   void completeMessage(String id) {
-    updateMessage(id, (m) => m.copyWith(status: MessageStatus.sent));
+    final messageChanged = updateMessage(
+      id,
+      (m) => m.copyWith(status: MessageStatus.sent, completedAt: DateTime.now()),
+    );
     if (_streamingMessageId == id) {
       _streamingMessageId = null;
       _subscription = null;
+      _completeConsume();
+      // The message update above already notified when it changed anything;
+      // only notify again here for the isStreaming flip itself.
+      if (!messageChanged) _safeNotify();
     }
-    _safeNotify();
   }
 
   /// Marks the message with [id] as failed with [error].
   void failMessage(String id, String error) {
-    updateMessage(
+    final messageChanged = updateMessage(
       id,
-      (m) => m.copyWith(status: MessageStatus.failed, error: error),
+      (m) => m.copyWith(
+        status: MessageStatus.failed,
+        error: error,
+        completedAt: DateTime.now(),
+      ),
     );
     if (_streamingMessageId == id) {
       _cancelSubscription();
+      if (!messageChanged) _safeNotify();
     }
-    _safeNotify();
   }
 
   // ---------------------------------------------------------------------
@@ -184,8 +206,7 @@ class ChatController extends ChangeNotifier {
   /// Throws a [StateError] when no responder was supplied — use the manual
   /// primitives in that case. Ignored while a response is already streaming.
   Future<void> send(String text, {List<Attachment>? attachments}) async {
-    final responder = _responder;
-    if (responder == null) {
+    if (_responder == null) {
       throw StateError(
         'ChatController.send requires a responder. Either pass one to the '
         'constructor or drive streaming with beginAssistantMessage / '
@@ -195,10 +216,18 @@ class ChatController extends ChangeNotifier {
     if (isStreaming) return;
     if (text.trim().isEmpty && (attachments?.isEmpty ?? true)) return;
 
-    final userMessage = ChatMessage.user(text, attachments: attachments);
+    await _sendUserMessage(ChatMessage.user(text, attachments: attachments));
+  }
+
+  /// Shared core of [send] and [editMessage]'s responder-attached path: adds
+  /// [userMessage] as-is (so callers control its id), opens a streaming
+  /// assistant message, and drives it through the responder.
+  ///
+  /// Callers must have already verified a responder is attached.
+  Future<void> _sendUserMessage(ChatMessage userMessage) async {
+    final responder = _responder!;
     _messages.add(userMessage);
     final assistantId = beginAssistantMessage();
-
     await _consume(responder(userMessage), assistantId);
   }
 
@@ -214,12 +243,13 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _consume(Stream<String> source, String assistantId) async {
     final completer = Completer<void>();
+    _consumeCompleter = completer;
 
     _subscription = source.listen(
       (chunk) => appendToken(assistantId, chunk),
       onError: (Object error, StackTrace _) {
         failMessage(assistantId, error.toString());
-        if (!completer.isCompleted) completer.complete();
+        _completeConsume();
       },
       onDone: () {
         // A stop() between the last chunk and onDone already finalized the
@@ -227,12 +257,25 @@ class ChatController extends ChangeNotifier {
         if (_streamingMessageId == assistantId) {
           completeMessage(assistantId);
         }
-        if (!completer.isCompleted) completer.complete();
+        _completeConsume();
       },
       cancelOnError: true,
     );
 
     return completer.future;
+  }
+
+  /// Completes the pending `_consume` future, if any.
+  ///
+  /// Cancelling `_subscription` (from [stop], [removeMessage], [failMessage]
+  /// or [dispose]) permanently prevents `onDone`/`onError` from firing — so
+  /// without this, whatever caller is `await`ing [send] or [streamResponse]
+  /// would hang forever the moment the stream is cancelled instead of ending
+  /// naturally.
+  void _completeConsume() {
+    final completer = _consumeCompleter;
+    _consumeCompleter = null;
+    if (completer != null && !completer.isCompleted) completer.complete();
   }
 
   /// Stops the in-flight response, keeping whatever text already arrived.
@@ -242,9 +285,18 @@ class ChatController extends ChangeNotifier {
     final id = _streamingMessageId;
     if (id == null) return;
     _cancelSubscription();
-    updateMessage(id, (m) => m.copyWith(status: MessageStatus.sent));
-    _markPendingToolCallsCancelled(id);
-    _safeNotify();
+    final statusChanged = updateMessage(
+      id,
+      (m) => m.copyWith(
+        status: MessageStatus.stopped,
+        completedAt: DateTime.now(),
+      ),
+    );
+    final toolCallsChanged = _markPendingToolCallsCancelled(id);
+    // _cancelSubscription already flipped isStreaming to false; that's a
+    // real change even when neither update above touched anything, so make
+    // sure exactly one notification reaches listeners either way.
+    if (!statusChanged && !toolCallsChanged) _safeNotify();
   }
 
   /// Rewrites the user message with [id] and regenerates from that point.
@@ -271,19 +323,30 @@ class ChatController extends ChangeNotifier {
     _messages.removeRange(index, _messages.length);
     _safeNotify();
 
+    final edited = original.copyWith(text: trimmed);
+
     if (_responder == null) {
-      _messages.add(original.copyWith(text: trimmed));
+      _messages.add(edited);
       _safeNotify();
       return;
     }
 
-    await send(trimmed, attachments: original.attachments);
+    // Goes through _sendUserMessage rather than send() so the edited message
+    // keeps original's id in both branches — send() would mint a fresh one.
+    await _sendUserMessage(edited);
   }
 
   /// Removes the last assistant message and re-sends the user message before
   /// it. Requires a responder.
   Future<void> retryLast() async {
     if (isStreaming) return;
+    if (_responder == null) {
+      throw StateError(
+        'ChatController.retryLast requires a responder. Either pass one to '
+        'the constructor or drive regeneration manually.',
+      );
+    }
+
     final lastUserIndex = _messages.lastIndexWhere(
       (m) => m.role == ChatRole.user,
     );
@@ -296,8 +359,8 @@ class ChatController extends ChangeNotifier {
     await send(userMessage.text, attachments: userMessage.attachments);
   }
 
-  void _markPendingToolCallsCancelled(String messageId) {
-    updateMessage(messageId, (m) {
+  bool _markPendingToolCallsCancelled(String messageId) {
+    return updateMessage(messageId, (m) {
       if (m.toolCalls.isEmpty) return m;
       final updated = m.toolCalls
           .map(
@@ -317,6 +380,7 @@ class ChatController extends ChangeNotifier {
     _subscription?.cancel();
     _subscription = null;
     _streamingMessageId = null;
+    _completeConsume();
   }
 
   /// Notifies listeners unless the controller has been disposed.
@@ -331,9 +395,7 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    _subscription?.cancel();
-    _subscription = null;
-    _streamingMessageId = null;
+    _cancelSubscription();
     super.dispose();
   }
 }

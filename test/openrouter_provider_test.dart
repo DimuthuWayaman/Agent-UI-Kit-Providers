@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:agent_ui_kit_providers/agent_ui_kit_providers.dart';
 import 'package:agent_ui_kit_providers/providers.dart';
@@ -156,6 +157,214 @@ void main() {
       expect(jsonDecode(event.call.input!), {'city': 'Colombo'});
     });
 
+    test(
+      'a mid-stream error frame fails the turn instead of completing '
+      'silently',
+      () async {
+        const sse = 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            'data: {"error":{"message":"rate limited","code":429}}\n\n'
+            'data: [DONE]\n\n';
+        final client = MockClient.streaming((request, bodyStream) async {
+          return _sseResponse([sse]);
+        });
+        final provider = OpenRouterProvider(
+          apiKey: 'k',
+          model: 'm',
+          httpClient: client,
+        );
+        addTearDown(provider.dispose);
+
+        await expectLater(
+          provider.streamEvents([ChatMessage.user('hi')]).toList(),
+          throwsA(isA<AgentProviderException>()),
+        );
+      },
+    );
+
+    test(
+      'a malformed-shape chunk is skipped rather than failing the whole '
+      'turn',
+      () async {
+        const sse = 'data: {"choices":"not-a-list"}\n\n'
+            'data: {"choices":[{"delta":{"content":"still works"}}]}\n\n'
+            'data: [DONE]\n\n';
+        final client = MockClient.streaming((request, bodyStream) async {
+          return _sseResponse([sse]);
+        });
+        final provider = OpenRouterProvider(
+          apiKey: 'k',
+          model: 'm',
+          httpClient: client,
+        );
+        addTearDown(provider.dispose);
+
+        final events =
+            await provider.streamEvents([ChatMessage.user('hi')]).toList();
+        expect(events, [const TextDelta('still works')]);
+      },
+    );
+
+    test('forwards an image attachment as an image_url content part',
+        () async {
+      String? capturedBody;
+      final client = MockClient.streaming((request, bodyStream) async {
+        capturedBody = await bodyStream.transform(utf8.decoder).join();
+        return _sseResponse(['data: [DONE]\n\n']);
+      });
+      final provider = OpenRouterProvider(
+        apiKey: 'k',
+        model: 'm',
+        httpClient: client,
+      );
+      addTearDown(provider.dispose);
+
+      final message = ChatMessage.user(
+        'what is this?',
+        attachments: [
+          Attachment(
+            id: 'a1',
+            name: 'photo.png',
+            mimeType: 'image/png',
+            bytes: Uint8List.fromList([1, 2, 3]),
+          ),
+        ],
+      );
+
+      await provider.streamEvents([message]).toList();
+
+      final body = jsonDecode(capturedBody!) as Map<String, Object?>;
+      final userMessage =
+          (body['messages'] as List<Object?>).single as Map<String, Object?>;
+      final content = userMessage['content'] as List<Object?>;
+      expect(content[0], {'type': 'text', 'text': 'what is this?'});
+      final imagePart = content[1] as Map<String, Object?>;
+      expect(imagePart['type'], 'image_url');
+      expect(
+        (imagePart['image_url'] as Map<String, Object?>)['url'],
+        startsWith('data:image/png;base64,'),
+      );
+    });
+
+    test('an image attachment with empty (not null) bytes falls back to url',
+        () async {
+      String? capturedBody;
+      final client = MockClient.streaming((request, bodyStream) async {
+        capturedBody = await bodyStream.transform(utf8.decoder).join();
+        return _sseResponse(['data: [DONE]\n\n']);
+      });
+      final provider = OpenRouterProvider(
+        apiKey: 'k',
+        model: 'm',
+        httpClient: client,
+      );
+      addTearDown(provider.dispose);
+
+      final message = ChatMessage.user(
+        'what is this?',
+        attachments: [
+          Attachment(
+            id: 'a1',
+            name: 'photo.png',
+            mimeType: 'image/png',
+            bytes: Uint8List(0),
+            url: 'https://example.com/photo.png',
+          ),
+        ],
+      );
+
+      await provider.streamEvents([message]).toList();
+
+      final body = jsonDecode(capturedBody!) as Map<String, Object?>;
+      final userMessage =
+          (body['messages'] as List<Object?>).single as Map<String, Object?>;
+      final content = userMessage['content'] as List<Object?>;
+      final imagePart = content[1] as Map<String, Object?>;
+      expect(
+        (imagePart['image_url'] as Map<String, Object?>)['url'],
+        'https://example.com/photo.png',
+      );
+    });
+
+    test('an attachment with no caption omits the empty text block',
+        () async {
+      String? capturedBody;
+      final client = MockClient.streaming((request, bodyStream) async {
+        capturedBody = await bodyStream.transform(utf8.decoder).join();
+        return _sseResponse(['data: [DONE]\n\n']);
+      });
+      final provider = OpenRouterProvider(
+        apiKey: 'k',
+        model: 'm',
+        httpClient: client,
+      );
+      addTearDown(provider.dispose);
+
+      final message = ChatMessage.user(
+        '',
+        attachments: [
+          Attachment(
+            id: 'a1',
+            name: 'photo.png',
+            mimeType: 'image/png',
+            bytes: Uint8List.fromList([1, 2, 3]),
+          ),
+        ],
+      );
+
+      await provider.streamEvents([message]).toList();
+
+      final body = jsonDecode(capturedBody!) as Map<String, Object?>;
+      final userMessage =
+          (body['messages'] as List<Object?>).single as Map<String, Object?>;
+      final content = userMessage['content'] as List<Object?>;
+      expect(content, hasLength(1));
+      expect((content.single as Map<String, Object?>)['type'], 'image_url');
+    });
+
+    test(
+        'an unfinished tool call is omitted from the tool_calls entry '
+        'instead of producing an unmatched one, but the turn itself still '
+        'appears in history', () async {
+      String? capturedBody;
+      final client = MockClient.streaming((request, bodyStream) async {
+        capturedBody = await bodyStream.transform(utf8.decoder).join();
+        return _sseResponse(['data: [DONE]\n\n']);
+      });
+      final provider = OpenRouterProvider(
+        apiKey: 'k',
+        model: 'm',
+        httpClient: client,
+      );
+      addTearDown(provider.dispose);
+
+      final conversation = [
+        ChatMessage.user('what is the weather?'),
+        ChatMessage.assistant(
+          '',
+          toolCalls: const [
+            ToolCall(
+              id: 'pending-call',
+              name: 'get_weather',
+              status: ToolCallStatus.pending,
+              input: '{"city":"Colombo"}',
+            ),
+          ],
+        ),
+      ];
+
+      await provider.streamEvents(conversation).toList();
+
+      final body = jsonDecode(capturedBody!) as Map<String, Object?>;
+      final messages = body['messages'] as List<Object?>;
+      expect(messages, hasLength(2));
+      // The assistant turn still appears (dropping it entirely would break
+      // strict role alternation for providers that require it) but carries
+      // no tool_calls key, since the one call it made hasn't resolved yet.
+      final assistantMessage = messages[1] as Map<String, Object?>;
+      expect(assistantMessage, {'role': 'assistant', 'content': ''});
+      expect(assistantMessage.containsKey('tool_calls'), isFalse);
+    });
+
     test('a non-2xx response throws AgentProviderException', () async {
       final client = MockClient.streaming((request, bodyStream) async {
         return http.StreamedResponse(
@@ -196,6 +405,50 @@ void main() {
       expect(controller.messages.last.error, isNotNull);
     });
 
+    test(
+      'asResponder strips only the trailing empty assistant placeholder, '
+      'not an earlier empty turn',
+      () async {
+        String? capturedBody;
+        final client = MockClient.streaming((request, bodyStream) async {
+          capturedBody = await bodyStream.transform(utf8.decoder).join();
+          return _sseResponse(['data: [DONE]\n\n']);
+        });
+        final provider = OpenRouterProvider(
+          apiKey: 'k',
+          model: 'm',
+          httpClient: client,
+        );
+        addTearDown(provider.dispose);
+
+        late final ChatController controller;
+        controller = ChatController(
+          initialMessages: [
+            ChatMessage.user('first'),
+            ChatMessage.assistant(''), // a genuinely empty completed turn
+            ChatMessage.user('second'),
+            ChatMessage.assistant('an answer'),
+          ],
+          responder: provider.asResponder(history: () => controller.messages),
+        );
+        addTearDown(controller.dispose);
+
+        await controller.send('third');
+
+        final body = jsonDecode(capturedBody!) as Map<String, Object?>;
+        final assistantContents = (body['messages'] as List<Object?>)
+            .cast<Map<String, Object?>>()
+            .where((m) => m['role'] == 'assistant')
+            .map((m) => m['content'])
+            .toList();
+
+        // The empty historical turn survives; only the trailing placeholder
+        // that ChatController.send() appends before invoking the responder
+        // is gone.
+        expect(assistantContents, ['', 'an answer']);
+      },
+    );
+
     test('asResponder streams text through a managed ChatController.send()',
         () async {
       const sse = 'data: {"choices":[{"delta":{"content":"hi there"}}]}\n\n'
@@ -221,6 +474,54 @@ void main() {
       expect(controller.messages.last.role, ChatRole.assistant);
       expect(controller.messages.last.text, 'hi there');
       expect(controller.messages.last.status, MessageStatus.sent);
+    });
+
+    test(
+        'asResponder still sends the user message when history is omitted '
+        'entirely', () async {
+      String? capturedBody;
+      final client = MockClient.streaming((request, bodyStream) async {
+        capturedBody = await bodyStream.transform(utf8.decoder).join();
+        return _sseResponse(['data: [DONE]\n\n']);
+      });
+      final provider = OpenRouterProvider(
+        apiKey: 'k',
+        model: 'm',
+        httpClient: client,
+      );
+      addTearDown(provider.dispose);
+
+      final responder = provider.asResponder(); // no `history:` supplied
+      await responder(ChatMessage.user('hello there')).toList();
+
+      final body = jsonDecode(capturedBody!) as Map<String, Object?>;
+      final messages = body['messages'] as List<Object?>;
+      expect(messages, hasLength(1));
+      expect(messages.single, {'role': 'user', 'content': 'hello there'});
+    });
+
+    test(
+        "asResponder does not duplicate the user message when history's "
+        'tail is already it', () async {
+      String? capturedBody;
+      final client = MockClient.streaming((request, bodyStream) async {
+        capturedBody = await bodyStream.transform(utf8.decoder).join();
+        return _sseResponse(['data: [DONE]\n\n']);
+      });
+      final provider = OpenRouterProvider(
+        apiKey: 'k',
+        model: 'm',
+        httpClient: client,
+      );
+      addTearDown(provider.dispose);
+
+      final userMessage = ChatMessage.user('hello there');
+      final responder = provider.asResponder(history: () => [userMessage]);
+      await responder(userMessage).toList();
+
+      final body = jsonDecode(capturedBody!) as Map<String, Object?>;
+      final messages = body['messages'] as List<Object?>;
+      expect(messages, hasLength(1));
     });
 
     test('sendMessage drives tool calls onto the controller', () async {

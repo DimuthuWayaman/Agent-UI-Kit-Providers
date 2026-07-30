@@ -374,7 +374,6 @@ class _ConversationTile extends StatelessWidget {
           child: Padding(
             padding: EdgeInsets.symmetric(
               horizontal: theme.spacing.md,
-              vertical: theme.spacing.sm + 2,
             ),
             child: Row(
               children: [

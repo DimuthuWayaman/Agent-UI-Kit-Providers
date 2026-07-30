@@ -42,6 +42,17 @@ class MarkdownView extends StatefulWidget {
   /// Text alignment for paragraphs.
   final TextAlign textAlign;
 
+  /// Whether [data] may still grow with more streamed text.
+  ///
+  /// While `true`, ambiguous trailing markdown syntax (an unclosed
+  /// `**`/`_`/`~~`/`` ` `` span, or a table header with no delimiter row
+  /// yet) renders optimistically instead of flashing its raw source
+  /// characters for a moment before the closing syntax arrives. Set this to
+  /// `false` (the default) once the message is complete, so any leftover
+  /// unclosed syntax falls back to literal text rather than staying
+  /// permanently mis-rendered.
+  final bool isStreaming;
+
   const MarkdownView({
     super.key,
     required this.data,
@@ -51,6 +62,7 @@ class MarkdownView extends StatefulWidget {
     this.onImageError,
     this.showCodeHeader = true,
     this.textAlign = TextAlign.start,
+    this.isStreaming = false,
   });
 
   @override
@@ -85,7 +97,11 @@ class _MarkdownViewState extends State<MarkdownView> {
   @override
   Widget build(BuildContext context) {
     final theme = AgentTheme.of(context);
-    _cache = MarkdownParser.parseIncremental(widget.data, _cache);
+    _cache = MarkdownParser.parseIncremental(
+      widget.data,
+      _cache,
+      streaming: widget.isStreaming,
+    );
     final blocks = _cache!.blocks;
 
     if (blocks.isEmpty) return const SizedBox.shrink();

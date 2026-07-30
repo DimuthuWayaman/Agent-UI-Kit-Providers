@@ -44,19 +44,31 @@ abstract class AgentProvider {
   /// represent them. Use [sendMessage] when the model may call tools.
   ///
   /// Pass [history] (typically `() => controller.messages`) so the provider
-  /// sees prior turns.
+  /// sees prior turns. Regardless of what [history] returns — including when
+  /// it's omitted entirely — the conversation sent to [streamEvents] always
+  /// ends with [userMessage] itself; the returned closure appends it when
+  /// [history]'s tail isn't already that same message, so a caller can never
+  /// silently end up sending an empty or stale conversation just by leaving
+  /// [history] unset.
   AgentResponder asResponder({List<ChatMessage> Function()? history}) {
     return (userMessage) {
       final base = history != null ? history() : const <ChatMessage>[];
       // ChatController.send() calls beginAssistantMessage() -- which appends
       // an *empty* streaming placeholder -- before invoking the responder, so
       // `base` already ends with that placeholder by the time this closure
-      // runs. Strip empty assistant messages so the provider sees the user's
-      // message as the true last turn, not an empty stub.
-      final conversation = [
-        for (final m in base)
-          if (!(m.role == ChatRole.assistant && m.isEmpty)) m,
-      ];
+      // runs. Strip only that trailing placeholder -- not every empty
+      // assistant message in history, which could otherwise remove a
+      // genuinely-completed empty turn and break a provider (Gemini) that
+      // requires strict user/model role alternation.
+      final trailingPlaceholder = base.isNotEmpty &&
+          base.last.role == ChatRole.assistant &&
+          base.last.isEmpty;
+      final withoutPlaceholder =
+          trailingPlaceholder ? base.sublist(0, base.length - 1) : base;
+      final conversation = withoutPlaceholder.isNotEmpty &&
+              withoutPlaceholder.last.id == userMessage.id
+          ? withoutPlaceholder
+          : [...withoutPlaceholder, userMessage];
       // Stream has no whereType() (that's an Iterable method) -- narrow with
       // where()+cast() instead.
       return streamEvents(conversation)

@@ -8,7 +8,7 @@ void main() {
     await tester.pumpWidget(const DemoApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('agent_ui_kit'), findsOneWidget);
+    expect(find.text('agent_ui_kit_providers'), findsOneWidget);
     expect(find.text('Chat demo'), findsOneWidget);
     expect(find.text('Widget gallery'), findsOneWidget);
 

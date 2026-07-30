@@ -145,6 +145,170 @@ void main() {
       expect(retried, isTrue);
     });
 
+    testWidgets('shows the response time when completed', (tester) async {
+      final createdAt = DateTime(2024, 1, 1, 12, 0, 0);
+      await tester.pumpWidget(
+        host(
+          ChatBubble(
+            message: ChatMessage.assistant('done').copyWith(
+              createdAt: createdAt,
+              completedAt: createdAt.add(const Duration(milliseconds: 2300)),
+            ),
+            showResponseTime: true,
+          ),
+        ),
+      );
+      expect(find.text('2.3s'), findsOneWidget);
+      expect(find.byIcon(Icons.timer_outlined), findsOneWidget);
+    });
+
+    testWidgets(
+        'pins response time to the opposite corner from the timestamp, not '
+        'right next to it', (tester) async {
+      // The two used to sit adjacent in the same cluster, separated only by
+      // a thin "|", which read as one ambiguous run of numbers. They should
+      // now anchor to opposite edges of the bubble.
+      final createdAt = DateTime(2024, 1, 1, 12, 0, 0);
+      await tester.pumpWidget(
+        host(
+          ChatBubble(
+            message: ChatMessage.assistant('done').copyWith(
+              createdAt: createdAt,
+              completedAt: createdAt.add(const Duration(milliseconds: 2300)),
+            ),
+            showTimestamp: true,
+            timestampFormatter: (_) => '9:41 AM',
+            showResponseTime: true,
+          ),
+        ),
+      );
+
+      expect(find.text('9:41 AM'), findsOneWidget);
+      expect(find.text('2.3s'), findsOneWidget);
+      expect(find.text('|'), findsNothing);
+      expect(find.textContaining('Responded'), findsNothing);
+
+      final timestampCenter = tester.getCenter(find.text('9:41 AM'));
+      final responseTimeCenter = tester.getCenter(find.text('2.3s'));
+      expect(
+        responseTimeCenter.dx,
+        greaterThan(timestampCenter.dx),
+        reason: 'response time should sit to the right of the timestamp',
+      );
+      // Same row, not stacked underneath.
+      expect((responseTimeCenter.dy - timestampCenter.dy).abs(), lessThan(4));
+    });
+
+    testWidgets('response time honors a custom formatter and icon',
+        (tester) async {
+      final createdAt = DateTime(2024, 1, 1, 12, 0, 0);
+      await tester.pumpWidget(
+        host(
+          ChatBubble(
+            message: ChatMessage.assistant('done').copyWith(
+              createdAt: createdAt,
+              completedAt: createdAt.add(const Duration(seconds: 4)),
+            ),
+            showResponseTime: true,
+            responseTimeFormatter: (d) => '${d.inSeconds}s flat',
+            responseTimeIcon: Icons.bolt_rounded,
+          ),
+        ),
+      );
+      expect(find.text('4s flat'), findsOneWidget);
+      expect(find.byIcon(Icons.bolt_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.timer_outlined), findsNothing);
+    });
+
+    testWidgets(
+        'a long response-time result does not overflow the bubble even '
+        'alongside a timestamp', (tester) async {
+      // A moderately narrow viewport plus a deliberately long formatter
+      // result is what exposed the missing Flexible around the
+      // response-time cluster. showActions is deliberately left off here --
+      // MessageActionBar's own fixed-width icon row is a separate concern
+      // from the bug this test targets.
+      tester.view.physicalSize = const Size(360, 600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final createdAt = DateTime(2024, 1, 1, 12, 0, 0);
+      await tester.pumpWidget(
+        host(
+          ChatBubble(
+            message: ChatMessage.assistant('done').copyWith(
+              createdAt: createdAt,
+              completedAt: createdAt.add(const Duration(seconds: 4)),
+            ),
+            showTimestamp: true,
+            showResponseTime: true,
+            responseTimeFormatter: (_) =>
+                'a very long response time label that would not normally fit',
+          ),
+        ),
+      );
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('hides the response time until showResponseTime is set',
+        (tester) async {
+      final createdAt = DateTime(2024, 1, 1, 12, 0, 0);
+      await tester.pumpWidget(
+        host(
+          ChatBubble(
+            message: ChatMessage.assistant('done').copyWith(
+              createdAt: createdAt,
+              completedAt: createdAt.add(const Duration(seconds: 1)),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('1.0s'), findsNothing);
+    });
+
+    testWidgets('shows an interrupted indicator when stopped', (tester) async {
+      final createdAt = DateTime(2024, 1, 1, 12, 0, 0);
+      await tester.pumpWidget(
+        host(
+          ChatBubble(
+            message: ChatMessage.assistant('partial answer').copyWith(
+              status: MessageStatus.stopped,
+              createdAt: createdAt,
+              completedAt: createdAt.add(const Duration(milliseconds: 3400)),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Interrupted after 3.4s'), findsOneWidget);
+      expect(find.byIcon(Icons.stop_circle_outlined), findsOneWidget);
+    });
+
+    testWidgets('interrupted indicator honors a custom formatter and icon',
+        (tester) async {
+      await tester.pumpWidget(
+        host(
+          ChatBubble(
+            message: ChatMessage.assistant('partial').copyWith(
+              status: MessageStatus.stopped,
+            ),
+            interruptedFormatter: (_) => 'Cut off',
+            interruptedIcon: Icons.pause_circle_outline,
+          ),
+        ),
+      );
+      expect(find.text('Cut off'), findsOneWidget);
+      expect(find.byIcon(Icons.pause_circle_outline), findsOneWidget);
+    });
+
+    testWidgets('does not show an interrupted indicator for a normal reply',
+        (tester) async {
+      await tester.pumpWidget(
+        host(ChatBubble(message: ChatMessage.assistant('done'))),
+      );
+      expect(find.textContaining('Interrupted'), findsNothing);
+    });
+
     testWidgets('renders a system message centered', (tester) async {
       await tester.pumpWidget(
         host(ChatBubble(message: ChatMessage.system('Context cleared'))),
@@ -334,6 +498,56 @@ void main() {
         host(ChatInputBar(onSend: (_) {}, onAttach: () {})),
       );
       expect(find.byIcon(Icons.add_rounded), findsOneWidget);
+    });
+
+    testWidgets(
+        'the character counter updates on every keystroke, not only when '
+        'crossing empty/non-empty', (tester) async {
+      await tester.pumpWidget(
+        host(ChatInputBar(onSend: (_) {}, maxLength: 20)),
+      );
+
+      // 16 chars = 80% of 20, the threshold where the counter appears.
+      await tester.enterText(find.byType(TextField), '1234567890123456');
+      await tester.pump();
+      expect(find.text('16 / 20'), findsOneWidget);
+
+      // A further keystroke never flips hasText (already non-empty both
+      // times) -- this is exactly the case the old code missed.
+      await tester.enterText(find.byType(TextField), '12345678901234567');
+      await tester.pump();
+      expect(find.text('17 / 20'), findsOneWidget);
+      expect(find.text('16 / 20'), findsNothing);
+    });
+
+    testWidgets(
+        'does not double-submit an attachment-only send from a rapid second '
+        'tap', (tester) async {
+      var sendCount = 0;
+      final sentTexts = <String>[];
+      await tester.pumpWidget(
+        host(
+          ChatInputBar(
+            onSend: (text) {
+              sendCount++;
+              sentTexts.add(text);
+            },
+            attachments: [Attachment(id: 'a1', name: 'photo.png')],
+            // Deliberately a no-op: simulates the parent not having rebuilt
+            // (and thus not yet reflecting the removal in) widget.attachments
+            // between the two taps below.
+            onRemoveAttachment: (_) {},
+          ),
+        ),
+      );
+
+      final sendButton = find.byIcon(Icons.arrow_upward_rounded);
+      await tester.tap(sendButton);
+      await tester.tap(sendButton);
+      await tester.pump();
+
+      expect(sendCount, 1);
+      expect(sentTexts, ['']);
     });
   });
 
