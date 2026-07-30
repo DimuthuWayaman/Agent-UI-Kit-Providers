@@ -18,7 +18,7 @@ for every consumer regardless of which library you import, but nothing under
 
 ```yaml
 dependencies:
-  agent_ui_kit_providers: ^1.0.0
+  agent_ui_kit_providers: ^1.1.0
 ```
 
 ## Why
